@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZFS Control Panel</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="top-bar">
+        <h1>ZFS Control</h1>
+        <button id="statusBtn" class="primary">Refresh Status</button>
+        <button id="poolHistoryBtn" class="secondary">Pool History</button>
+        
+        <div class="auto-refresh-controls">
+            <label for="autoRefreshInterval">Interval:</label>
+            <select id="autoRefreshInterval">
+                <option value="15000">15s</option>
+                <option value="30000">30s</option>
+                <option value="60000" selected>1m</option>
+                <option value="300000">5m</option>
+                <option value="0">Off</option> 
+            </select>
+            <label class="switch">
+                <input type="checkbox" id="autoRefreshToggle">
+                <span class="slider"></span>
+            </label>
+        </div>
+        <button id="createPoolBtn" class="primary">Create Pool</button>
+        <button id="attachDiskBtn" class="secondary">Attach Disk</button>
+        <button id="replaceDiskBtn" class="secondary">Replace Disk</button>
+        <button id="scrubPoolBtn" class="secondary">Scrub Pool</button>
+        <button id="destroyPoolBtn" class="danger">Destroy Pool</button>
+    </div>
+
+    <div id="messageArea"></div>
+
+    <div class="main-content">
+        <div class="pools-pane pane" id="poolsPane">
+            <h3>Pools</h3>
+            </div>
+        <div class="disks-pane pane" id="disksPane">
+            <h3>Disks / VDEVs</h3>
+            </div>
+        <div class="details-pane pane" id="detailsPane">
+            <h3 id="detailsPaneTitle">Status Details</h3>
+            <pre id="rawOutput">Select a pool or refresh status to see details.</pre>
+        </div>
+    </div>
+
+    <div id="createPoolModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('createPoolModal')">&times;</span>
+            <h3>Create New ZFS Pool</h3>
+            <label for="poolName">Pool Name:</label>
+            <input type="text" id="poolName" name="poolName" placeholder="e.g., mydatapool" required>
+            <label for="poolType">Pool Type (VDEV):</label>
+            <select id="poolType" name="poolType">
+                <option value="">Stripe (Single Disk or Concatenation)</option>
+                <option value="mirror">Mirror</option>
+                <option value="raidz1">RAID-Z1</option> <option value="raidz2">RAID-Z2</option> <option value="raidz3">RAID-Z3</option>
+            </select>
+            <label for="poolDisksSelect">Select Disks (Hold Ctrl/Cmd to select multiple):</label>
+            <select multiple id="poolDisksSelect" name="poolDisksSelect"></select>
+            <div class="modal-buttons">
+                <button onclick="closeModal('createPoolModal')" class="secondary">Cancel</button>
+                <button onclick="submitCreatePool()" class="primary">Create Pool</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="attachDiskModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('attachDiskModal')">&times;</span>
+            <h3>Attach Disk to Pool</h3>
+            <label for="attachPoolName">Pool Name:</label>
+            <input type="text" id="attachPoolName" name="attachPoolName" placeholder="Pool to attach to" required readonly>
+            
+            <label for="attachTargetVdevSelect">Target Vdev in Pool (Optional - for mirrors/RAID-Z expansion):</label>
+            <select id="attachTargetVdevSelect" name="attachTargetVdevSelect">
+                <option value="">Attach to pool directly (new top-level vdev)</option>
+            </select>
+            
+            <label for="attachNewDiskSelect">New Disk to Attach (select from available):</label>
+            <select id="attachNewDiskSelect" name="attachNewDiskSelect" required>
+                <option value="">-- Select New Disk --</option>
+            </select>
+            
+            <div class="modal-buttons">
+                <button onclick="closeModal('attachDiskModal')" class="secondary">Cancel</button>
+                <button onclick="submitAttachDisk()" class="primary">Attach Disk</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="replaceDiskModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('replaceDiskModal')">&times;</span>
+            <h3>Replace Disk in Pool</h3>
+            <label for="replacePoolName">Pool Name:</label>
+            <input type="text" id="replacePoolName" name="replacePoolName" placeholder="Pool to act on" required readonly>
+            <label for="oldDiskPath">Old Disk Path/ID (as shown in status):</label>
+            <input type="text" id="oldDiskPath" name="oldDiskPath" placeholder="e.g., /dev/sdb or vdev identifier" required readonly>
+            <label for="newDiskPathSelect">New Disk (select from available):</label>
+            <select id="newDiskPathSelect" name="newDiskPathSelect" required>
+                <option value="">-- Select New Disk --</option>
+            </select>
+            <div class="modal-buttons">
+                <button onclick="closeModal('replaceDiskModal')" class="secondary">Cancel</button>
+                <button onclick="submitReplaceDisk()" class="primary">Replace Disk</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="destroyPoolModal" class="modal"> <div class="modal-content"> <span class="close-button" onclick="closeModal('destroyPoolModal')">&times;</span> <h3 style="color: #dc3545;">Destroy ZFS Pool (DANGEROUS!)</h3> <p style="color: #721c24; background-color: #f8d7da; padding:10px; border: 1px solid #f5c6cb; border-radius:var(--border-radius);">This action is IRREVERSIBLE and will result in DATA LOSS for the selected pool.</p> <label for="destroyPoolName">Pool Name to Destroy:</label> <input type="text" id="destroyPoolName" name="destroyPoolName" required> <label for="confirmDestroyName">Type pool name again to confirm:</label> <input type="text" id="confirmDestroyName" name="confirmDestroyName" required> <div class="modal-buttons"> <button onclick="closeModal('destroyPoolModal')" class="secondary">Cancel</button> <button onclick="submitDestroyPool()" class="danger">Destroy Pool</button> </div> </div> </div>
+    <div id="scrubPoolModal" class="modal"> <div class="modal-content"> <span class="close-button" onclick="closeModal('scrubPoolModal')">&times;</span> <h3>Scrub ZFS Pool</h3> <label for="scrubPoolName">Pool Name to Scrub/Stop Scrub:</label> <input type="text" id="scrubPoolName" name="scrubPoolName" required> <div class="modal-buttons"> <button onclick="closeModal('scrubPoolModal')" class="secondary">Cancel</button> <button onclick="submitScrubPool('start')" class="primary">Start Scrub</button> <button onclick="submitScrubPool('stop')" class="secondary">Stop Scrub</button> </div> </div> </div>
+
+    <script>
+        const poolsPane = document.getElementById('poolsPane');
+        const disksPane = document.getElementById('disksPane');
+        const rawOutputEl = document.getElementById('rawOutput');
+        const messageArea = document.getElementById('messageArea');
+        const detailsPaneTitleEl = document.getElementById('detailsPaneTitle');
+        let currentPoolsData = [];
+        let selectedPoolName = null;
+        const byIdPrefix = "/dev/disk/by-id/";
+        const partitionRegex = /-part\d+$/; // Regex to identify partition suffixes
+
+        const autoRefreshToggle = document.getElementById('autoRefreshToggle');
+        const autoRefreshIntervalSelect = document.getElementById('autoRefreshInterval');
+        let autoRefreshIntervalId = null;
+
+        function showMessage(message, isError = false) {
+            messageArea.textContent = message;
+            messageArea.className = isError ? 'error' : 'success';
+            messageArea.style.display = 'block';
+        }
+        
+        function clearMessage() {
+            messageArea.style.display = 'none';
+            messageArea.textContent = '';
+        }
+
+        async function fetchStatus(isAutoRefresh = false) { 
+            if (!isAutoRefresh) { 
+                showMessage("Fetching ZFS status...", false); 
+                rawOutputEl.textContent = "Loading status...";
+            }
+            detailsPaneTitleEl.textContent = "Status Details"; 
+            try {
+                const response = await fetch('/status');
+                if (!response.ok) { 
+                    const errData = await response.json().catch(()=>({message: `HTTP error! Status: ${response.status}`})); 
+                    throw new Error(errData.message); 
+                }
+                const data = await response.json();
+                if (data.status === "success") {
+                    if (!isAutoRefresh) clearMessage(); 
+                    currentPoolsData = data.pools || []; 
+                    
+                    if (!selectedPoolName && !isAutoRefresh) { 
+                        rawOutputEl.textContent = data.raw_output || "No ZFS pools or issue fetching raw status.";
+                    }
+                    
+                    if (!isAutoRefresh) {
+                        renderPools();
+                    }
+
+                    if (selectedPoolName) {
+                        const poolExists = currentPoolsData.some(p => p.name === selectedPoolName);
+                        if (poolExists) {
+                            selectPool(selectedPoolName); 
+                            if (!isAutoRefresh) { 
+                                renderDisksForSelectedPool();
+                            }
+                        } else { 
+                            selectedPoolName = null; 
+                            if (!isAutoRefresh) { 
+                                disksPane.innerHTML = '<h3>Disks / VDEVs</h3><p>Pool gone or unselected.</p>'; 
+                                rawOutputEl.textContent = data.raw_output || "Pool not found. Displaying global status.";
+                            }
+                        }
+                    } else if (!isAutoRefresh) { 
+                        disksPane.innerHTML = '<h3>Disks / VDEVs</h3><p>No pool selected.</p>';
+                        rawOutputEl.textContent = data.raw_output || "No ZFS pools or issue fetching raw status.";
+                    }
+                } else { 
+                    if (!isAutoRefresh) showMessage(`Status Error: ${data.message}`, true); 
+                    else console.error(`Auto-Refresh Status Error: ${data.message}`);
+                    rawOutputEl.textContent = `Error: ${data.message}`; 
+                    if (!isAutoRefresh) {
+                        currentPoolsData = []; 
+                        renderPools(); 
+                        disksPane.innerHTML = '<h3>Disks / VDEVs</h3>'; 
+                    }
+                }
+            } catch (error) { 
+                if (!isAutoRefresh) showMessage(`Network/Client Error: ${error.message}`, true); 
+                else console.error(`Auto-Refresh Network/Client Error: ${error.message}`);
+                rawOutputEl.textContent = `Error: ${error.message}`; 
+                if (!isAutoRefresh) {
+                    currentPoolsData = []; 
+                    renderPools(); 
+                    disksPane.innerHTML = '<h3>Disks / VDEVs</h3>'; 
+                }
+            }
+        }
+
+        async function refreshDetailsPaneOnly() {
+            if (!autoRefreshToggle.checked || document.hidden) { 
+                 if(autoRefreshIntervalId && document.hidden){ /* Optionally log or handle tab being hidden */ }
+                return;
+            }
+            try {
+                const response = await fetch('/status'); 
+                if (!response.ok) {
+                    console.error("Auto-refresh details: HTTP error " + response.status);
+                    return;
+                }
+                const data = await response.json();
+                if (data.status === "success") {
+                    currentPoolsData = data.pools || []; 
+                    if (detailsPaneTitleEl.textContent.toLowerCase().includes("status details")) {
+                        if (selectedPoolName) {
+                            const pool = currentPoolsData.find(p => p.name === selectedPoolName);
+                            if (pool && pool.status_details) {
+                                rawOutputEl.textContent = pool.status_details.join('\n');
+                            } else {
+                                rawOutputEl.textContent = `Pool ${selectedPoolName} no longer found. Displaying global status.`;
+                                detailsPaneTitleEl.textContent = "Global Status";
+                            }
+                        } else {
+                            rawOutputEl.textContent = data.raw_output || "Global status unavailable.";
+                            detailsPaneTitleEl.textContent = "Global Status";
+                        }
+                    }
+                    if (selectedPoolName) {
+                        renderDisksForSelectedPool(); 
+                    }
+                } else {
+                    console.error("Auto-refresh details: API error - " + data.message);
+                }
+            } catch (error) {
+                console.error("Auto-refresh details: Network/Client error - " + error.message);
+            }
+        }
+
+        function getPoolStatusIndicator(pool) { 
+            const d = pool.status_details.join('\n').toLowerCase(); 
+            if (d.includes('state: online')) return 'status-online'; 
+            if (d.includes('state: degraded')) return 'status-degraded'; 
+            if (d.includes('state: faulted')) return 'status-faulted'; 
+            return 'status-unknown'; 
+        }
+        
+        function renderPools() { 
+            poolsPane.innerHTML = '<h3>Pools</h3>'; 
+            if (currentPoolsData.length === 0) { poolsPane.innerHTML += "<p>No ZFS pools found.</p>"; return; } 
+            currentPoolsData.forEach(pool => { 
+                const div = document.createElement('div'); div.className = 'list-item'; 
+                const sS = document.createElement('span'); sS.className = `status-indicator ${getPoolStatusIndicator(pool)}`; div.appendChild(sS); 
+                const nS = document.createElement('span'); nS.textContent = pool.name; div.appendChild(nS); 
+                if (pool.name === selectedPoolName) div.classList.add('selected'); 
+                div.onclick = () => selectPool(pool.name); 
+                poolsPane.appendChild(div); 
+            }); 
+        }
+        
+        function selectPool(poolName) { 
+            selectedPoolName = poolName; 
+            renderPools(); 
+            renderDisksForSelectedPool(); 
+            const sPD = currentPoolsData.find(p => p.name === poolName);
+            if (sPD && sPD.status_details) {
+                 rawOutputEl.textContent = sPD.status_details.join('\n');
+                 detailsPaneTitleEl.textContent = `Status Details for ${poolName}`;
+            } else {
+                 rawOutputEl.textContent = `Details for pool '${poolName}' not found.`;
+                 detailsPaneTitleEl.textContent = "Status Details";
+            }
+            ['attachPoolName', 'replacePoolName', 'destroyPoolName', 'scrubPoolName'].forEach(id => { 
+                const el = document.getElementById(id); 
+                if(el) el.value = poolName; 
+            });
+        }
+
+        function renderDisksForSelectedPool() {
+            disksPane.innerHTML = '<h3>Disks / VDEVs</h3>'; 
+            if (!selectedPoolName) { 
+                disksPane.innerHTML += "<p>No pool selected.</p>"; 
+                return; 
+            }
+            const pool = currentPoolsData.find(p => p.name === selectedPoolName);
+            if (pool && pool.disks && pool.disks.length > 0) { 
+                pool.disks.forEach(diskIdentifier => { 
+                    const div = document.createElement('div'); 
+                    div.className = 'list-item'; 
+                    
+                    let displayDisk = diskIdentifier;
+                    if (diskIdentifier.startsWith(byIdPrefix)) { 
+                        displayDisk = diskIdentifier.substring(byIdPrefix.length);
+                    }
+
+                    let diskStatus = "UNKNOWN"; 
+                    let statusClass = "status-unknown";
+
+                    if (pool.status_details) {
+                        const statusLine = pool.status_details.find(line => {
+                            const trimmedLine = line.trim();
+                            return trimmedLine.startsWith(diskIdentifier + " ") || trimmedLine.split(/\s+/)[0] === diskIdentifier;
+                        });
+
+                        if (statusLine) {
+                            const parts = statusLine.trim().split(/\s+/);
+                            if (parts.length > 1 && parts[0] === diskIdentifier) { 
+                                diskStatus = parts[1].toUpperCase();
+                                if (diskStatus === "ONLINE") statusClass = "status-online";
+                                else if (diskStatus === "DEGRADED") statusClass = "status-degraded";
+                                else if (["FAULTED", "UNAVAIL", "OFFLINE", "REMOVED"].includes(diskStatus)) statusClass = "status-faulted";
+                                else { 
+                                    statusClass = "status-unknown"; 
+                                }
+                            }
+                        }
+                    }
+                    
+                    const statusIndicatorSpan = document.createElement('span');
+                    statusIndicatorSpan.className = `status-indicator ${statusClass}`;
+                    div.appendChild(statusIndicatorSpan); 
+
+                    const nameSpan = document.createElement('span');
+                    nameSpan.textContent = displayDisk;
+                    div.appendChild(nameSpan);
+                    
+                    /*
+                    const statusTextSpan = document.createElement('span');
+                    statusTextSpan.className = `disk-status-text ${statusClass}`;
+                    statusTextSpan.textContent = `(${diskStatus})`;
+                    div.appendChild(statusTextSpan);
+                    */
+                    
+                    div.onclick = () => { 
+                        document.getElementById('oldDiskPath').value = diskIdentifier; 
+                        document.getElementById('replacePoolName').value = selectedPoolName;
+                        openModal('replaceDiskModal'); 
+                    }; 
+                    disksPane.appendChild(div); 
+                });
+            } else {
+                disksPane.innerHTML += `<p>No disks/vdevs for '${selectedPoolName}' or data incomplete.</p>`;
+            }
+        }
+        
+        // MODIFIED: For Create Pool - filters out partitions
+        async function populateDiskSelector() {
+            const selectElement = document.getElementById('poolDisksSelect');
+            selectElement.innerHTML = '<option value="" disabled>Loading all disk ID entries...</option>';
+            try {
+                const response = await fetch('/list_all_disk_ids'); 
+                const data = await response.json();
+                selectElement.innerHTML = ''; 
+
+                if (data.status === 'success' && data.entries && data.entries.length > 0) {
+                    data.entries.forEach(entry => {
+                        if (!partitionRegex.test(entry.id_name)) { // Filter out partitions
+                            const option = document.createElement('option');
+                            option.value = entry.full_path; 
+                            option.textContent = `${entry.id_name} (target: ${entry.target_device})`;
+                            selectElement.appendChild(option);
+                        }
+                    });
+                    if (selectElement.options.length === 0) { // If all were filtered out
+                        selectElement.innerHTML = '<option value="" disabled>No non-partition entries found in /dev/disk/by-id/.</option>';
+                    }
+                } else if (data.entries && data.entries.length === 0) {
+                    selectElement.innerHTML = '<option value="" disabled>No entries found in /dev/disk/by-id/.</option>';
+                } else {
+                    selectElement.innerHTML = `<option value="" disabled>Error: ${data.message || 'Unknown error loading disk ID entries'}</option>`;
+                }
+            } catch (error) {
+                console.error("Error fetching all disk ID entries for create pool:", error);
+                selectElement.innerHTML = `<option value="" disabled>Client error loading disk ID entries: ${error.message}</option>`;
+            }
+        }
+
+        // MODIFIED: For Replace Disk - filters out partitions
+        async function populateNewDiskSelector() { 
+            const selectElement = document.getElementById('newDiskPathSelect'); 
+            selectElement.innerHTML = '<option value="" disabled>Loading all disk ID entries...</option>'; 
+            try { 
+                const response = await fetch('/list_all_disk_ids'); 
+                const data = await response.json(); 
+                selectElement.innerHTML = '<option value="">-- Select New Disk --</option>'; 
+                if (data.status === 'success' && data.entries && data.entries.length > 0) { 
+                    data.entries.forEach(entry => { 
+                        if (!partitionRegex.test(entry.id_name)) { // Filter out partitions
+                            const option = document.createElement('option'); 
+                            option.value = entry.full_path; 
+                            option.textContent = `${entry.id_name} (target: ${entry.target_device})`;
+                            selectElement.appendChild(option); 
+                        }
+                    }); 
+                    if (selectElement.options.length <= 1) { // Check if only the default "-- Select New Disk --" is present
+                         selectElement.innerHTML = '<option value="" disabled>No non-partition disk ID entries found to use as replacement.</option>';
+                    }
+                } else if (data.entries && data.entries.length === 0) { 
+                    selectElement.innerHTML = '<option value="" disabled>No disk ID entries found to use as replacement.</option>'; 
+                } else { 
+                    selectElement.innerHTML = `<option value="" disabled>Error loading disk ID entries: ${data.message || 'Unknown error'}</option>`; 
+                }
+            } catch (error) { 
+                console.error("Error fetching all disk ID entries for replacement:", error); 
+                selectElement.innerHTML = `<option value="" disabled>Client error loading disk ID entries: ${error.message}</option>`;
+            }
+        }
+
+        // MODIFIED: For Attach Disk - filters out partitions
+        async function populateAttachNewDiskSelector() { 
+            const selectElement = document.getElementById('attachNewDiskSelect'); 
+            selectElement.innerHTML = '<option value="" disabled>Loading all disk ID entries...</option>'; 
+            try { 
+                const response = await fetch('/list_all_disk_ids'); 
+                const data = await response.json(); 
+                selectElement.innerHTML = '<option value="">-- Select New Disk --</option>'; 
+                if (data.status === 'success' && data.entries && data.entries.length > 0) { 
+                    data.entries.forEach(entry => { 
+                        if (!partitionRegex.test(entry.id_name)) { // Filter out partitions
+                            const option = document.createElement('option'); 
+                            option.value = entry.full_path; 
+                            option.textContent = `${entry.id_name} (target: ${entry.target_device})`; 
+                            selectElement.appendChild(option); 
+                        }
+                    }); 
+                    if (selectElement.options.length <= 1) { // Check if only the default "-- Select New Disk --" is present
+                        selectElement.innerHTML = '<option value="" disabled>No non-partition disk ID entries found to attach.</option>';
+                    }
+                } else if (data.entries && data.entries.length === 0) { 
+                    selectElement.innerHTML = '<option value="" disabled>No disk ID entries found to attach.</option>'; 
+                } else { 
+                    selectElement.innerHTML = `<option value="" disabled>Error loading disk ID entries: ${data.message || 'Unknown error'}</option>`; 
+                }
+            } catch (error) { 
+                console.error("Error fetching all disk ID entries for attach:", error); 
+                selectElement.innerHTML = `<option value="" disabled>Client error loading disk ID entries: ${error.message}</option>`;
+            }
+        }
+
+        function populateTargetVdevSelector(poolName) { 
+            const selectElement = document.getElementById('attachTargetVdevSelect'); 
+            selectElement.innerHTML = '<option value="">Attach to pool directly (new top-level vdev)</option>'; 
+            if (!poolName) { console.warn("populateTargetVdevSelector called without a poolName."); return; } 
+            const pool = currentPoolsData.find(p => p.name === poolName); 
+            if (pool && pool.disks && pool.disks.length > 0) { 
+                pool.disks.forEach(vdevName => { 
+                    const option = document.createElement('option'); 
+                    option.value = vdevName; 
+                    let displayVdevName = vdevName; 
+                    if (vdevName.startsWith(byIdPrefix)) { 
+                        displayVdevName = vdevName.substring(byIdPrefix.length); 
+                    } 
+                    option.textContent = displayVdevName; 
+                    selectElement.appendChild(option); 
+                }); 
+            } else { 
+                console.warn(`No vdevs (pool.disks) found for pool: ${poolName} in currentPoolsData.`); 
+            }
+        }
+        function openModal(modalId) { 
+            if (selectedPoolName) { 
+                ['attachPoolName', 'replacePoolName', 'destroyPoolName', 'scrubPoolName'].forEach(id => { 
+                    const el = document.getElementById(id); 
+                    if(el && (modalId !== 'createPoolModal')) el.value = selectedPoolName; 
+                }); 
+            } else { 
+                if (modalId === 'attachDiskModal' && document.getElementById('attachPoolName')) { 
+                    document.getElementById('attachPoolName').value = ''; 
+                }
+                 if (modalId === 'replaceDiskModal' && document.getElementById('replacePoolName')) {
+                    document.getElementById('replacePoolName').value = '';
+                }
+            } 
+            if (modalId === 'createPoolModal') { 
+                document.getElementById('poolName').value = ''; 
+                populateDiskSelector(); 
+            } else if (modalId === 'replaceDiskModal') { 
+                populateNewDiskSelector(); 
+            } else if (modalId === 'attachDiskModal') { 
+                if (selectedPoolName) { 
+                    populateTargetVdevSelector(selectedPoolName); 
+                } else { 
+                    const targetVdevSelect = document.getElementById('attachTargetVdevSelect'); 
+                    targetVdevSelect.innerHTML = '<option value="">Select a pool first</option>'; 
+                } 
+                populateAttachNewDiskSelector(); 
+            } 
+            document.getElementById(modalId).style.display = 'block'; 
+        }
+        function closeModal(modalId) { document.getElementById(modalId).style.display = 'none'; if (modalId === 'destroyPoolModal') document.getElementById('confirmDestroyName').value = '';}
+        window.onclick = function(event) { if (event.target.classList.contains('modal')) { event.target.style.display = "none"; if (event.target.id === 'destroyPoolModal') document.getElementById('confirmDestroyName').value = ''; } }
+        async function handleZfsAction(endpoint, payload, actionVerb) { showMessage(`${actionVerb}...`, false); try { const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); const result = await response.json(); if (result.status === 'success') { showMessage(result.message || `${actionVerb.split(' ')[0]} successful.`, false); return true; } else { showMessage(result.message || `Error during ${actionVerb.toLowerCase()}.`, true); return false; } } catch (error) { showMessage(`Client Error during ${actionVerb.toLowerCase()}: ${error.message}`, true); return false; } }
+        async function submitCreatePool() { const poolName = document.getElementById('poolName').value.trim(); const poolType = document.getElementById('poolType').value; const selEl = document.getElementById('poolDisksSelect'); const selOpts = Array.from(selEl.selectedOptions); const disks = selOpts.map(opt => opt.value); if (!poolName || disks.length === 0) { alert("Pool name and at least one disk selection are required."); return; } if (await handleZfsAction('/create_pool', { pool_name: poolName, pool_type: poolType, disks: disks }, `Creating pool ${poolName}`)) { closeModal('createPoolModal'); fetchStatus(); } }
+        async function submitAttachDisk() { const poolName = document.getElementById('attachPoolName').value.trim(); const existingVdev = document.getElementById('attachTargetVdevSelect').value; const newDiskSelect = document.getElementById('attachNewDiskSelect'); const newDisk = newDiskSelect.value; if (!poolName || !newDisk) { alert("Pool name and a new disk selection are required."); return; } const payload = { pool_name: poolName, new_disk: newDisk }; if (existingVdev) { payload.existing_vdev = existingVdev; } if (await handleZfsAction('/attach_disk', payload, `Attaching disk to ${poolName}`)) { closeModal('attachDiskModal'); fetchStatus(); } }
+        async function submitReplaceDisk() { const poolName = document.getElementById('replacePoolName').value.trim(); const oldDisk = document.getElementById('oldDiskPath').value.trim(); const newDiskSelect = document.getElementById('newDiskPathSelect'); const newDisk = newDiskSelect.value; if (!poolName || !oldDisk || !newDisk) { alert("Pool name, old disk path/ID, and a new disk selection from the dropdown are required."); return; } if (await handleZfsAction('/replace_disk', { pool_name: poolName, old_disk: oldDisk, new_disk: newDisk }, `Replacing disk ${oldDisk} with ${newDisk} in ${poolName}`)) { closeModal('replaceDiskModal'); fetchStatus(); } }
+        async function submitDestroyPool() { const pN=document.getElementById('destroyPoolName').value.trim(); const cN=document.getElementById('confirmDestroyName').value.trim(); if(!pN){alert("Pool name required.");return;} if(pN!==cN){alert("Confirmation mismatch.");return;} if(!confirm(`FINAL WARNING: Destroy pool "${pN}"? IRREVERSIBLE!`)){return;} if(await handleZfsAction('/destroy_pool',{pool_name:pN},`Destroying ${pN}`)){ closeModal('destroyPoolModal'); if(selectedPoolName===pN)selectedPoolName=null; fetchStatus(); } }
+        async function submitScrubPool(action) { const pN=document.getElementById('scrubPoolName').value.trim(); if(!pN){alert("Pool name required.");return;} const verb=action==='start'?`Starting scrub on ${pN}`:`Stopping scrub on ${pN}`; if(await handleZfsAction('/scrub_pool',{pool_name:pN,action:action},verb)){ closeModal('scrubPoolModal'); fetchStatus(); } }
+        async function fetchPoolHistory() { if (!selectedPoolName) { showMessage("Please select a pool first to view its history.", true); detailsPaneTitleEl.textContent = "Pool History"; rawOutputEl.textContent = "No pool selected."; return; } showMessage(`Fetching history for pool ${selectedPoolName}...`, false); rawOutputEl.textContent = `Loading history for ${selectedPoolName}...`; detailsPaneTitleEl.textContent = `History for ${selectedPoolName}`; try { const response = await fetch(`/pool_history/${selectedPoolName}`); if (!response.ok) { const errorData = await response.json().catch(() => ({message: `HTTP error! Status: ${response.status}`})); throw new Error(errorData.message || `HTTP error! Status: ${response.status}`); } const data = await response.json(); if (data.status === "success") { clearMessage(); rawOutputEl.textContent = data.message || `No history found for pool ${selectedPoolName}.`; } else { showMessage(`Error fetching history: ${data.message}`, true); rawOutputEl.textContent = `Error fetching history: ${data.message}`; } } catch (error) { showMessage(`Client-side or network error fetching history: ${error.message}`, true); rawOutputEl.textContent = `Error: ${error.message}`; } }
+        
+        function startAutoRefresh() {
+            if (autoRefreshIntervalId) {
+                clearInterval(autoRefreshIntervalId); 
+            }
+            const intervalValue = parseInt(autoRefreshIntervalSelect.value);
+            if (autoRefreshToggle.checked && intervalValue > 0) {
+                autoRefreshIntervalId = setInterval(refreshDetailsPaneOnly, intervalValue);
+            }
+        }
+
+        function stopAutoRefresh() {
+            if (autoRefreshIntervalId) {
+                clearInterval(autoRefreshIntervalId);
+                autoRefreshIntervalId = null;
+            }
+        }
+
+        function setupAutoRefreshControls() {
+            const savedInterval = localStorage.getItem('zfsControlAutoRefreshInterval');
+            const savedToggleState = localStorage.getItem('zfsControlAutoRefreshToggle') === 'true';
+
+            if (savedInterval) {
+                autoRefreshIntervalSelect.value = savedInterval;
+            }
+            autoRefreshToggle.checked = savedToggleState;
+
+            autoRefreshToggle.addEventListener('change', () => {
+                localStorage.setItem('zfsControlAutoRefreshToggle', autoRefreshToggle.checked);
+                if (autoRefreshToggle.checked) {
+                    startAutoRefresh();
+                } else {
+                    stopAutoRefresh();
+                }
+            });
+
+            autoRefreshIntervalSelect.addEventListener('change', () => {
+                localStorage.setItem('zfsControlAutoRefreshInterval', autoRefreshIntervalSelect.value);
+                if (autoRefreshToggle.checked) {
+                    startAutoRefresh(); 
+                }
+            });
+            
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    // Tab is hidden
+                } else {
+                    // Tab is visible
+                    if (autoRefreshToggle.checked) { 
+                        startAutoRefresh(); 
+                    }
+                }
+            });
+
+            if (autoRefreshToggle.checked) {
+                startAutoRefresh();
+            }
+        }
+
+        document.getElementById('statusBtn').addEventListener('click', () => fetchStatus(false)); 
+        document.getElementById('poolHistoryBtn').addEventListener('click', fetchPoolHistory);
+        document.getElementById('createPoolBtn').addEventListener('click', () => openModal('createPoolModal'));
+        document.getElementById('attachDiskBtn').addEventListener('click', () => { 
+            if (selectedPoolName) {
+                document.getElementById('attachPoolName').value = selectedPoolName;
+            } else {
+                 document.getElementById('attachPoolName').value = ''; 
+            }
+            openModal('attachDiskModal');
+        });
+        document.getElementById('replaceDiskBtn').addEventListener('click', () => {
+            if (selectedPoolName) {
+                document.getElementById('replacePoolName').value = selectedPoolName;
+            } else {
+                 document.getElementById('replacePoolName').value = ''; 
+            }
+            document.getElementById('oldDiskPath').value = ''; 
+            openModal('replaceDiskModal');
+        });
+        document.getElementById('destroyPoolBtn').addEventListener('click', () => openModal('destroyPoolModal'));
+        document.getElementById('scrubPoolBtn').addEventListener('click', () => openModal('scrubPoolModal'));
+        
+        setupAutoRefreshControls(); 
+        fetchStatus(false); 
+    </script>
+</body>
+</html>
